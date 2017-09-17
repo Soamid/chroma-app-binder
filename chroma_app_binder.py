@@ -3,13 +3,15 @@ import time
 
 import psutil
 from rx import Observable
-from rx.concurrency import NewThreadScheduler
+from rx.concurrency import NewThreadScheduler, ThreadPoolScheduler
+from threading import current_thread
 
 CHROMA_APP_PATH = r'C:\ChromaApps\KeyboardVisualizer\KeyboardVisualizerVC_3.04.exe'
 
 known_processes = set()
 
 app_proc = None
+
 
 def scan_processes(rx_subscriber):
     while True:
@@ -40,6 +42,7 @@ def check_if_running(pid):
     else:
         return True
 
+
 def handle_audio_start(pid):
     global app_proc
     known_processes.add(pid)
@@ -50,13 +53,12 @@ def handle_audio_start(pid):
         info.wShowWindow = SW_MINIMIZE
 
         app_proc = subprocess.Popen(CHROMA_APP_PATH, startupinfo=info)
-    print("START", pid, app_proc.pid)
-
+    print("START", pid, app_proc.pid, current_thread().name)
 
 
 def handle_audio_end(pid):
-    print("KONIEC", pid, len(known_processes))
     known_processes.remove(pid)
+    print("KONIEC", pid, len(known_processes), current_thread().name)
     if not known_processes:
         try:
             global app_proc
@@ -66,17 +68,23 @@ def handle_audio_end(pid):
             print('Error during killing chroma app')
 
 
-
+# access global variables safely
+processing_scheduler = ThreadPoolScheduler(1)
 
 scanner = Observable.create(lambda subscriber: scan_processes(subscriber)) \
+    .distinct() \
     .subscribe_on(NewThreadScheduler()) \
     .publish()
-scanner.distinct() \
+
+# start chroma app when valid process shows up
+scanner.observe_on(processing_scheduler) \
     .subscribe(handle_audio_start)
 
-scanner.distinct() \
-    .flat_map(lambda pid: Observable.from_callable(wait_for_end(pid), NewThreadScheduler())) \
+# tear down chroma app when all valid processes are terminated
+scanner.flat_map(lambda pid: Observable.from_callable(wait_for_end(pid), NewThreadScheduler())) \
+    .observe_on(processing_scheduler) \
     .subscribe(handle_audio_end)
+
 scanner.connect()
 
 input()
